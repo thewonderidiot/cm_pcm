@@ -11,8 +11,14 @@ module pcm_nrz(
     output wire dbg
 );
 
+parameter CLK_HZ = 10240000;
+parameter BIT_RATE = 51200;
+parameter FRAME_SIZE = 128;
 parameter SYNC_PATTERN = 26'b00000101_01111001_10110111_11;
 
+localparam CYCLES_PER_BIT = CLK_HZ / BIT_RATE;
+
+/****************************** RX DEBOUNCE ***********************************/
 reg rxd1;
 reg rxd2;
 reg rxd_bit;
@@ -38,19 +44,22 @@ always @(posedge clk) begin
     end
 end
 
-reg [7:0] sample_count;
+/***************************** SAMPLE TIMING **********************************/
+localparam COUNT_SIZE = $clog2(CYCLES_PER_BIT);
+
+reg [COUNT_SIZE-1:0] sample_count;
 wire bit_sample;
 assign dbg=bit_sample;
-assign bit_sample = (sample_count == 8'd100);
+assign bit_sample = (sample_count == (CYCLES_PER_BIT/2));
 always @(posedge clk) begin
     if (~reset_n) begin
-        sample_count <= 8'b0;
+        sample_count <= 0;
     end else begin
         if (rxd_edge) begin
-            sample_count <= 8'b0;
+            sample_count <= 0;
         end else begin
-            if (sample_count == 8'd199) begin
-                sample_count <= 8'b0;
+            if (sample_count == (CYCLES_PER_BIT-1)) begin
+                sample_count <= 0;
             end else begin
                 sample_count <= sample_count + 1;
             end
@@ -58,6 +67,7 @@ always @(posedge clk) begin
     end
 end
 
+/********************************* SAMPLING ***********************************/
 reg [25:0] rx_bits;
 always @(posedge clk) begin
     if (~reset_n) begin
@@ -71,9 +81,10 @@ always @(posedge clk) begin
     end
 end
 
-reg [6:0] frame_count;
+/****************************** FRAME SYNCING *********************************/
+reg [7:0] frame_count;
 wire sync;
-assign sync = (frame_count == 7'b0) && (rx_bits == SYNC_PATTERN);
+assign sync = (frame_count == 8'b0) && (rx_bits == SYNC_PATTERN);
 assign lock = (frame_count > 0);
 
 reg [2:0] bit_count;
@@ -96,10 +107,10 @@ assign byte_sync = bit_sample && (bit_count == 0);
 
 always @(posedge clk) begin
     if (~reset_n) begin
-        frame_count <= 7'b0;
+        frame_count <= 8'b0;
     end else begin
         if (sync) begin
-            frame_count <= 7'd127;
+            frame_count <= FRAME_SIZE;
         end else if (tx_en) begin
             if (frame_count > 0) begin
                 frame_count <= frame_count - 1;
@@ -112,30 +123,7 @@ always @(posedge clk) begin
     end
 end
 
-reg [3:0] keepout_count;
-wire keepout;
-assign keepout = keepout_count > 0;
-always @(posedge clk) begin
-    if (~reset_n) begin
-        keepout_count <= 3'b0;
-    end else begin
-        if (sync) begin
-            keepout_count <= 3'd0;
-        end else if (bit_sample) begin
-            if ((frame_count == 7'd0) && (rx_bits[18:0] == SYNC_PATTERN[25:7])) begin
-                keepout_count <= 3'd7;
-            end else if (keepout_count > 0) begin
-                keepout_count <= keepout_count - 1;
-            end else begin
-                keepout_count <= keepout_count;
-            end
-        end else begin
-            keepout_count <= keepout_count;
-        end
-    end
-end
-
-assign tx_en = (~keepout) & byte_sync;
+assign tx_en = (lock) & byte_sync;
 assign tx_data = rx_bits[25:18];
 
 endmodule;
