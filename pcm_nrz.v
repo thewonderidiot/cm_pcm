@@ -126,5 +126,5 @@ end
 assign tx_en = (lock) & byte_sync;
 assign tx_data = rx_bits[25:18];
 
-endmodule;
+endmodule
 `default_nettype wire
