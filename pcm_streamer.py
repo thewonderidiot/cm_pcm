@@ -108,17 +108,17 @@ class PCMStreamer:
         self.frame = 0
         self.buffer = b''
 
-        # port = None
-        # devices = list_ports.comports()
-        # for dev in devices:
-        #     if dev.vid == 0x0403 and dev.pid == 0x6010:
-        #         port = dev.device
+        port = None
+        devices = list_ports.comports()
+        for dev in devices:
+            if dev.vid == 0x0403 and dev.pid == 0x6010:
+                port = dev.device
 
-        # if port is None:
-        #     raise RuntimeError('No FPGA found')
+        if port is None:
+            raise RuntimeError('No FPGA found')
 
-        # self.serial = serial.Serial(port, 115200, timeout=0.01)
-        self.serial = open('testdata.bin', 'rb')
+        self.serial = serial.Serial(port, 115200, timeout=0.01)
+        # self.serial = open('testdata.bin', 'rb')
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(('172.17.0.1', 8081))
@@ -139,7 +139,7 @@ class PCMStreamer:
             word = self.serial.read(1)
             if word:
                 self.process_word(word)
-                time.sleep(0.001)
+                # time.sleep(0.001)
 
     def process_word(self, new_word):
         self.buffer += new_word
