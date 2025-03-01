@@ -83,9 +83,28 @@ end
 
 /****************************** FRAME SYNCING *********************************/
 reg [7:0] frame_count;
+wire pos_sync;
+assign pos_sync = (frame_count == 8'b0) && (rx_bits == SYNC_PATTERN);
+wire neg_sync;
+assign neg_sync = (frame_count == 8'b0) && ((~rx_bits) == SYNC_PATTERN);
 wire sync;
-assign sync = (frame_count == 8'b0) && (rx_bits == SYNC_PATTERN);
+assign sync = pos_sync || neg_sync;
 assign lock = (frame_count > 0);
+
+reg inverted;
+always @(posedge clk) begin
+    if (~reset_n) begin
+        inverted <= 1'b0;
+    end else begin
+        if (pos_sync) begin
+            inverted <= 1'b0;
+        end else if (neg_sync) begin
+            inverted <= 1'b1;
+        end else begin
+            inverted <= inverted;
+        end
+    end
+end
 
 reg [2:0] bit_count;
 always @(posedge clk) begin
@@ -124,7 +143,9 @@ always @(posedge clk) begin
 end
 
 assign tx_en = (lock) & byte_sync;
-assign tx_data = rx_bits[25:18];
+wire [7:0] raw_data;
+assign raw_data = rx_bits[25:18];
+assign tx_data = (inverted) ? ~raw_data : raw_data;
 
 endmodule
 `default_nettype wire
