@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 from serial.tools import list_ports
+from pathlib import Path
+import argparse
 import serial
 import time
 import struct
 import socket
 import csv
-import sys
 import re
 
 COSMOS_SYNC = b'\xA5\x5A'
@@ -22,6 +23,7 @@ DP11_ID = 0x011D
 DP51_ID = 0x051D
 DS51_ID = 0x0515
 SRC_ID =  0x054C
+AGC_BASE_ID = 0x1000
 
 class TableEntry:
     def __init__(self, channel, group, index, byte):
@@ -76,6 +78,77 @@ def load_table(fn):
 
     return table
 
+def load_agc_downlists(program):
+    downlists = []
+    word_data = {}
+
+    csvs = list(Path(program).glob('**/*.csv'))
+    for list_id,fn in enumerate(sorted(csvs)):
+        downlist = []
+        downlists.append(downlist)
+
+        with open(fn, 'r', newline='') as f:
+            reader = csv.reader(f)
+            for i,row in enumerate(reader):
+                if not row[1]:
+                    dp = True
+                    row.pop(1)
+                else:
+                    dp = False
+
+                words = []
+                downlist.append(words)
+                for word in row:
+                    words.append({
+                        'name': word,
+                        'packet': None,
+                        'index': None
+                    })
+                    if word not in word_data:
+                        word_data[word] = {
+                            'dp': dp,
+                            'counts': [0]*len(csvs)
+                        }
+
+                    word_data[word]['counts'][list_id] += 1
+
+    packet_defs = {}
+    for word,data in word_data.items():
+        if word == 'GARBAGE':
+            continue
+
+        counts = data['counts']
+        max_count = max(counts)
+        counts = [min(c, 1) for c in counts]
+        counts.append(max_count)
+        counts = tuple(counts)
+
+        if counts not in packet_defs:
+            packet_defs[counts] = {
+                'words': [],
+                'fmt': ''
+            }
+
+        packet_defs[counts]['words'].append(word)
+        packet_defs[counts]['fmt'] += 'I' if data['dp'] else 'H'
+
+    word_mapping = {}
+    for pkt_idx, counts in enumerate(packet_defs):
+        pkt_def = packet_defs[counts]
+        for word_idx, word in enumerate(pkt_def['words']):
+            word_mapping[word] = (pkt_idx, word_idx)
+
+    for downlist in downlists:
+        for word_idx, words in enumerate(downlist):
+            for word in words:
+                if word['name'] == 'GARBAGE':
+                    continue
+                pkt_data = word_mapping[word['name']]
+                word['packet'] = pkt_data[0]
+                word['index'] = pkt_data[1]
+
+    return downlists, [pkt_def['fmt'] for pkt_def in packet_defs.values()]
+
 class LockState:
     UNLOCKED = 0
     TRACKING = 1
@@ -97,11 +170,19 @@ class PCMStreamer:
         self.src = [0]*2
         self.nul = [0]*1
 
-    def __init__(self):
+    def __init__(self, downlists):
         self.reset_data()
 
         self.hbr_table = load_table('hbr.csv')
         self.lbr_table = load_table('lbr.csv')
+
+        self.agc_packets = []
+        self.agc_downlist = None
+        self.agc_idx = 0
+
+        self.downlists, self.agc_pkt_fmts = load_agc_downlists(downlists)
+        for fmt in self.agc_pkt_fmts:
+            self.agc_packets.append([0]*len(fmt))
 
         self.state = LockState.UNLOCKED
         self.offset = 0
@@ -110,15 +191,15 @@ class PCMStreamer:
 
         port = None
         devices = list_ports.comports()
-        for dev in devices:
+        for dev in reversed(devices):
             if dev.vid == 0x0403 and dev.pid == 0x6010:
                 port = dev.device
 
-        if port is None:
-            raise RuntimeError('No FPGA found')
+        # if port is None:
+        #     raise RuntimeError('No FPGA found')
 
-        self.serial = serial.Serial(port, 115200, timeout=0.01)
-        # self.serial = open('testdata.bin', 'rb')
+        # self.serial = serial.Serial(port, 115200, timeout=0.01)
+        self.serial = open('skylark_p63.bin', 'rb')
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(('172.17.0.1', 8081))
@@ -139,7 +220,8 @@ class PCMStreamer:
             word = self.serial.read(1)
             if word:
                 self.process_word(word)
-                # time.sleep(0.001)
+                # print(word.hex())
+                # time.sleep(0.00015625)
 
     def process_word(self, new_word):
         self.buffer += new_word
@@ -243,9 +325,48 @@ class PCMStreamer:
         return packet
 
     def pack_ds51(self):
-        _51ds1 = struct.pack('<Q', *self.ds51)[:5]
-        packet = COSMOS_SYNC + struct.pack('>H', DS51_ID) + _51ds1
-        return packet
+        ds51 = struct.unpack('>Q', struct.pack('<Q', *self.ds51))[0] >> 24
+        wo = ds51 >> 39
+        word = [((ds51 >> 24) & 0o77777), ((ds51 >> 8) & 0o77777)]
+        agc_packet = b''
+
+        if wo == 0 and word[1] == 0o77340:
+            self.agc_index = 0
+            self.agc_downlist = 0o77777 - word[0]
+            if self.agc_downlist == 0o76000:
+                self.agc_downlist_len = 129
+            else:
+                self.agc_downlist_len = 100
+
+        if self.agc_downlist is None:
+            return None
+
+        word_data = self.downlists[self.agc_downlist][self.agc_index]
+        if len(word_data) == 1:
+            word[0] = (word[0] << 15) | word[1]
+
+        for w,d in zip(word, word_data):
+            pkt = d['packet']
+            if pkt is None:
+                continue
+            idx = d['index']
+            self.agc_packets[pkt][idx] = w
+            if (idx + 1) == len(self.agc_pkt_fmts[pkt]):
+                agc_packet += COSMOS_SYNC + struct.pack('>H', AGC_BASE_ID + pkt) + struct.pack('>' + self.agc_pkt_fmts[pkt], *self.agc_packets[pkt])
+
+        self.agc_index += 1
+        if self.agc_index >= self.agc_downlist_len:
+            self.agc_downlist = None
+
+        # _51ds1 = struct.pack('<Q', *self.ds51)[:5]
+        # packet = COSMOS_SYNC + struct.pack('>H', DS51_ID) + _51ds1
+        # return packet
+        if len(agc_packet) == 0:
+            return None
+        else:
+            # print(agc_packet.hex())
+            pass
+        return agc_packet
 
     def pack_src(self):
         packet = COSMOS_SYNC + struct.pack('>H2B', SRC_ID, *self.src)
@@ -256,7 +377,10 @@ class PCMStreamer:
 
 
 def main():
-    streamer = PCMStreamer()
+    parser = argparse.ArgumentParser(description='CM PCM streaming deframer')
+    parser.add_argument('downlists', help='Directory containing AGC downlist CSVs')
+    args = parser.parse_args()
+    streamer = PCMStreamer(args.downlists)
     streamer.main_loop()
 
 if __name__ == "__main__":
