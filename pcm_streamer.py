@@ -24,6 +24,7 @@ DP51_ID = 0x051D
 DS51_ID = 0x0515
 SRC_ID =  0x054C
 AGC_BASE_ID = 0x1000
+EMEM_BASE_ID = 0x2000
 
 class TableEntry:
     def __init__(self, channel, group, index, byte):
@@ -179,6 +180,17 @@ class PCMStreamer:
         self.agc_packets = []
         self.agc_downlist = None
         self.agc_idx = 0
+        self.emem_bank = 0
+        self.emem_data = [
+            [0]*258,
+            [0]*258,
+            [0]*258,
+            [0]*258,
+            [0]*258,
+            [0]*258,
+            [0]*258,
+            [0]*258,
+        ]
 
         self.downlists, self.agc_pkt_fmts = load_agc_downlists(downlists)
         for fmt in self.agc_pkt_fmts:
@@ -195,11 +207,11 @@ class PCMStreamer:
             if dev.vid == 0x0403 and dev.pid == 0x6010:
                 port = dev.device
 
-        # if port is None:
-        #     raise RuntimeError('No FPGA found')
+        if port is None:
+            raise RuntimeError('No FPGA found')
 
-        # self.serial = serial.Serial(port, 115200, timeout=0.01)
-        self.serial = open('skylark_p63.bin', 'rb')
+        self.serial = serial.Serial(port, 115200, timeout=0.01)
+        # self.serial = open('skylark_p00_ememdump.bin', 'rb')
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(('172.17.0.1', 8081))
@@ -327,12 +339,11 @@ class PCMStreamer:
     def pack_ds51(self):
         ds51 = struct.unpack('>Q', struct.pack('<Q', *self.ds51))[0] >> 24
         wo = ds51 >> 39
-        word = [((ds51 >> 24) & 0o77777), ((ds51 >> 8) & 0o77777)]
-        agc_packet = b''
+        words = [((ds51 >> 24) & 0o77777), ((ds51 >> 8) & 0o77777)]
 
-        if wo == 0 and word[1] == 0o77340:
+        if wo == 0 and words[1] == 0o77340:
             self.agc_index = 0
-            self.agc_downlist = 0o77777 - word[0]
+            self.agc_downlist = 0o77777 - words[0]
             if self.agc_downlist == 0o76000:
                 self.agc_downlist_len = 129
             else:
@@ -341,18 +352,10 @@ class PCMStreamer:
         if self.agc_downlist is None:
             return None
 
-        word_data = self.downlists[self.agc_downlist][self.agc_index]
-        if len(word_data) == 1:
-            word[0] = (word[0] << 15) | word[1]
-
-        for w,d in zip(word, word_data):
-            pkt = d['packet']
-            if pkt is None:
-                continue
-            idx = d['index']
-            self.agc_packets[pkt][idx] = w
-            if (idx + 1) == len(self.agc_pkt_fmts[pkt]):
-                agc_packet += COSMOS_SYNC + struct.pack('>H', AGC_BASE_ID + pkt) + struct.pack('>' + self.agc_pkt_fmts[pkt], *self.agc_packets[pkt])
+        if self.agc_downlist == 0o76000:
+            pkts = self.handle_emem(words)
+        else:
+            pkts = self.handle_downlist(words)
 
         self.agc_index += 1
         if self.agc_index >= self.agc_downlist_len:
@@ -361,12 +364,42 @@ class PCMStreamer:
         # _51ds1 = struct.pack('<Q', *self.ds51)[:5]
         # packet = COSMOS_SYNC + struct.pack('>H', DS51_ID) + _51ds1
         # return packet
-        if len(agc_packet) == 0:
-            return None
-        else:
-            # print(agc_packet.hex())
-            pass
-        return agc_packet
+        return pkts
+
+    def handle_downlist(self, words):
+        pkts = b''
+        word_data = self.downlists[self.agc_downlist][self.agc_index]
+        if len(word_data) == 1:
+            words[0] = (words[0] << 15) | words[1]
+
+        for w,d in zip(words, word_data):
+            pkt = d['packet']
+            if pkt is None:
+                continue
+            idx = d['index']
+            self.agc_packets[pkt][idx] = w
+            if (idx + 1) == len(self.agc_pkt_fmts[pkt]):
+                pkts += COSMOS_SYNC + struct.pack('>H', AGC_BASE_ID + pkt) + struct.pack('>' + self.agc_pkt_fmts[pkt], *self.agc_packets[pkt])
+
+        return pkts if pkts else None
+
+
+    def handle_emem(self, words):
+        if self.agc_index == 0:
+            return
+
+        if self.agc_index == 1:
+            self.emem_bank = (words[0] >> 8) & 0x7
+
+        emem_idx = (self.agc_index - 1) * 2
+        self.emem_data[self.emem_bank][emem_idx] = words[0]
+        self.emem_data[self.emem_bank][emem_idx+1] = words[1]
+
+        if self.agc_index == 128:
+            packet = COSMOS_SYNC + struct.pack('>H', EMEM_BASE_ID + self.emem_bank) + struct.pack('>258H', *self.emem_data[self.emem_bank])
+            return packet
+
+        return None
 
     def pack_src(self):
         packet = COSMOS_SYNC + struct.pack('>H2B', SRC_ID, *self.src)
