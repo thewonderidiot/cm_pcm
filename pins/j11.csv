@@ -1,0 +1,55 @@
+A,11DP21 bit 7
+B,11DP21 bit 6
+C,11DP21 bit 5
+D,11DP21 bit 4
+E,11DP21 bit 3
+F,11DP21 bit 2
+G,11DP21 bit 1
+H,11DP21 bit 0
+J,11DP22 bit 7
+K,11DP22 bit 6
+L,11DP22 bit 5
+M,11DP22 bit 4
+N,11DP22 bit 3
+P,11DP22 bit 2
+R,11DP22 bit 1
+S,11DP22 bit 0
+T,11DP23 bit 7
+U,11DP23 bit 6
+V,11DP23 bit 5
+W,11DP23 bit 4
+X,11DP23 bit 3
+Y,11DP23 bit 2
+Z,11DP23 bit 1
+a,11DP23 bit 0
+b,11DP24 bit 7
+c,11DP24 bit 6
+d,11DP24 bit 5
+e,11DP24 bit 4
+f,11DP24 bit 3
+g,11DP24 bit 2
+h,11DP24 bit 1
+i,11DP24 bit 0
+j,11DP25 bit 7
+k,11DP25 bit 6
+m,11DP25 bit 5
+n,11DP25 bit 4
+p,11DP25 bit 3
+q,11DP25 bit 2
+r,11DP25 bit 1
+s,11DP25 bit 0
+t,11DP26 bit 7
+u,11DP26 bit 6
+v,11DP26 bit 5
+w,11DP26 bit 4
+x,11DP26 bit 3
+y,11DP26 bit 2
+z,11DP26 bit 1
+AA,11DP26 bit 0
+BB,GND
+CC,GND
+DD,GND
+EE,GND
+FF,GND
+GG,GND
+HH,
