@@ -1,2 +1,4 @@
 test_pcm_nrz
+fpga/pcm_fpga
+*.swp
 *.fst
